@@ -936,7 +936,7 @@ actor AgentConfigurationService {
         let configDir = "\(home)/.claude"
         let configPath = "\(configDir)/settings.json"
 
-        let opusModel = config.modelSlots[.opus] ?? "gemini-claude-opus-4-5-thinking"
+        let opusModel = config.modelSlots[.opus] ?? "kiro-claude-opus-4-7-agentic"
         let sonnetModel = config.modelSlots[.sonnet] ?? "gemini-claude-sonnet-4-5"
         let haikuModel = config.modelSlots[.haiku] ?? "gemini-3-flash-preview"
         let baseURL = config.proxyURL.replacingOccurrences(of: "/v1", with: "")
@@ -1510,14 +1510,17 @@ actor AgentConfigurationService {
         let copilotFetcher = CopilotQuotaFetcher()
         let availableCopilotModelIds = await copilotFetcher.fetchUserAvailableModelIds()
 
-        return decoded.data.compactMap { item in
+        var models = decoded.data.compactMap { item -> AvailableModel? in
             let provider = item.owned_by ?? "openai"
 
             // Filter GitHub Copilot models - only include those actually available to the user
             if provider == "github-copilot" {
                 // If we have Copilot accounts, filter by available models
                 if !availableCopilotModelIds.isEmpty {
-                    guard availableCopilotModelIds.contains(item.id) else {
+                    // Strip prefix (e.g., "copilot-gpt-5.4" -> "gpt-5.4") for comparison
+                    let bareId = item.id.hasPrefix("copilot-") ? String(item.id.dropFirst("copilot-".count)) :
+                                 item.id.hasPrefix("copilot/") ? String(item.id.dropFirst("copilot/".count)) : item.id
+                    guard availableCopilotModelIds.contains(bareId) else {
                         return nil
                     }
                 }
@@ -1531,6 +1534,39 @@ actor AgentConfigurationService {
                 isDefault: false
             )
         }
+
+        // Supplement with Copilot models not returned by CLIProxyAPI
+        if !availableCopilotModelIds.isEmpty {
+            let existingCopilotIds = Set(models.filter { $0.provider == "github-copilot" }.map { id in
+                // Strip prefix (e.g., "copilot-gpt-5.4" -> "gpt-5.4") for comparison
+                if let range = id.id.range(of: "copilot-") { return String(id.id[range.upperBound...]) }
+                if let range = id.id.range(of: "copilot/") { return String(id.id[range.upperBound...]) }
+                return id.id
+            })
+            let missingCopilotModels = availableCopilotModelIds.subtracting(existingCopilotIds)
+            for modelId in missingCopilotModels {
+                models.append(AvailableModel(id: modelId, name: modelId, provider: "github-copilot", isDefault: false))
+            }
+        }
+
+        // Also fetch models from kiro-proxy sidecar if running
+        let kiroBaseURL = await CLIProxyManager.shared.kiroProxy.baseURL
+        if let kiroBaseURL,
+           let kiroURL = URL(string: "\(kiroBaseURL)/v1/models") {
+            var kiroRequest = URLRequest(url: kiroURL)
+            kiroRequest.timeoutInterval = 5
+            if let (kiroData, kiroResp) = try? await session.data(for: kiroRequest),
+               let httpResp = kiroResp as? HTTPURLResponse, httpResp.statusCode == 200,
+               let kiroDecoded = try? JSONDecoder().decode(ModelsResponse.self, from: kiroData) {
+                let kiroModels = kiroDecoded.data.map {
+                    AvailableModel(id: $0.id, name: $0.id, provider: $0.owned_by ?? "kiro", isDefault: false)
+                }
+                let existingIds = Set(models.map(\.id))
+                models.append(contentsOf: kiroModels.filter { !existingIds.contains($0.id) })
+            }
+        }
+
+        return models
     }
     
     func testConnection(agent: CLIAgent, config: AgentConfiguration) async -> ConnectionTestResult {

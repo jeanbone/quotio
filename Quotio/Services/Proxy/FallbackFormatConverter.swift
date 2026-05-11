@@ -31,7 +31,7 @@ nonisolated struct FallbackFormatConverter {
             let parts = firstLine.components(separatedBy: " ")
             if parts.count >= 2, let code = Int(parts[1]) {
                 switch code {
-                case 429, 503, 500, 400, 401, 403, 422:
+                case 429, 503, 500, 400, 401, 403, 422, 502:
                     return .httpStatus(code)
                 case 200..<300:
                     return nil

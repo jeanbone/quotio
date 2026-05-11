@@ -124,8 +124,7 @@ struct AddFallbackEntrySheet: View {
 
     private func isSelectableModel(_ model: AvailableModel) -> Bool {
         model.provider.lowercased() != "fallback" &&
-        !existingModelIds.contains(model.id) &&
-        ModelType.detect(from: model.id) == virtualModelType
+        !existingModelIds.contains(model.id)
     }
 
     /// Filter out virtual models, already added entries, and incompatible model types
