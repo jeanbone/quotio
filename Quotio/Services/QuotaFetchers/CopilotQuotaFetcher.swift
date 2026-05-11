@@ -440,9 +440,11 @@ actor CopilotQuotaFetcher {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.addValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.addValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.addValue("token \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Accept")
+        request.addValue("GithubCopilot/1.300.0", forHTTPHeaderField: "User-Agent")
+        request.addValue("vscode/1.100.0", forHTTPHeaderField: "Editor-Version")
+        request.addValue("copilot/1.300.0", forHTTPHeaderField: "Editor-Plugin-Version")
 
         let (data, response) = try await session.data(for: request)
 
@@ -467,9 +469,10 @@ actor CopilotQuotaFetcher {
         request.httpMethod = "GET"
         request.addValue("Bearer \(apiToken)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Accept")
-        request.addValue("GithubCopilot/1.0", forHTTPHeaderField: "User-Agent")
+        request.addValue("GithubCopilot/1.300.0", forHTTPHeaderField: "User-Agent")
         request.addValue("vscode/1.100.0", forHTTPHeaderField: "Editor-Version")
         request.addValue("copilot/1.300.0", forHTTPHeaderField: "Editor-Plugin-Version")
+        request.addValue("conversation-panel", forHTTPHeaderField: "Openai-Intent")
 
         let (data, response) = try await session.data(for: request)
 

@@ -357,8 +357,8 @@ final class AgentSetupViewModel {
             guard let proxyManager = proxyManager else { return false }
 
             // Use the first API key from the API Keys management interface
-            // If no keys exist, fall back to managementKey
-            let apiKey = quotaViewModel?.apiKeys.first ?? proxyManager.managementKey
+            // If no keys exist, fall back to managementKey (which also works as API key)
+            let apiKey = quotaViewModel?.apiKeys.first ?? proxyManager.configAPIKey ?? proxyManager.managementKey
 
             // Use tunnel URL if active, otherwise use local proxy endpoint
             let modelEndpoint: String

@@ -17,6 +17,9 @@ final class CLIProxyManager {
     /// This solves the stale connection issue by forcing "Connection: close" on all requests
     let proxyBridge = ProxyBridge()
     
+    /// Kiro sidecar proxy for routing kiro-prefixed models to AWS Q Developer
+    let kiroProxy = KiroProxyManager()
+    
     /// When enabled: clients connect to userPort, ProxyBridge forwards to internalPort
     /// When disabled: clients connect directly to userPort where CLIProxyAPI runs
     var useBridgeMode: Bool {
@@ -44,6 +47,12 @@ final class CLIProxyManager {
     /// Internal port where CLIProxyAPI runs (when bridge mode is enabled)
     var internalPort: UInt16 {
         ProxyBridge.internalPort(from: proxyStatus.port)
+    }
+
+    /// Port for kiro-proxy sidecar (user port + 20000, capped at valid range)
+    var kiroProxyPort: UInt16 {
+        let preferred = UInt32(proxyStatus.port) + 20000
+        return preferred <= 65535 ? UInt16(preferred) : UInt16(49152 + (proxyStatus.port % 1000))
     }
     
     nonisolated static func terminateProxyOnShutdown() {
@@ -181,6 +190,22 @@ final class CLIProxyManager {
     let configPath: String
     let authDir: String
     private(set) var managementKey: String
+
+    /// Read the first API key directly from config.yaml as fallback
+    var configAPIKey: String? {
+        guard let content = try? String(contentsOfFile: configPath, encoding: .utf8) else { return nil }
+        // Parse: api-keys:\n  - "key"
+        let lines = content.components(separatedBy: .newlines)
+        for (i, line) in lines.enumerated() where line.trimmingCharacters(in: .whitespaces) == "api-keys:" {
+            if i + 1 < lines.count {
+                let next = lines[i + 1].trimmingCharacters(in: .whitespaces)
+                if next.hasPrefix("- ") {
+                    return next.dropFirst(2).trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+                }
+            }
+        }
+        return nil
+    }
     
     var port: UInt16 {
         get { proxyStatus.port }
@@ -901,6 +926,9 @@ final class CLIProxyManager {
                 if bridgeEnabled {
                     self.proxyBridge.stop()
                 }
+                
+                // Stop kiro-proxy sidecar
+                self.kiroProxy.stop()
 
                 self.proxyStatus.running = false
                 self.process = nil
@@ -927,7 +955,7 @@ final class CLIProxyManager {
             
             // If bridge mode is enabled, start ProxyBridge
             if bridgeEnabled {
-                proxyBridge.configure(listenPort: userPort, targetPort: cliProxyPort)
+                proxyBridge.configure(listenPort: userPort, targetPort: cliProxyPort, kiroProxyPort: kiroProxyPort)
                 proxyBridge.start()
                 
                 // Wait a bit for ProxyBridge to start
@@ -947,6 +975,16 @@ final class CLIProxyManager {
             
             proxyStatus.running = true
             
+            // Start kiro-proxy sidecar (best-effort, non-blocking)
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.kiroProxy.start(port: self.kiroProxyPort)
+                } catch {
+                    NSLog("[CLIProxyManager] kiro-proxy failed to start: \(error.localizedDescription)")
+                }
+            }
+            
             startHealthMonitor()
             
         } catch {
@@ -959,6 +997,9 @@ final class CLIProxyManager {
         terminateAuthProcess()
         stopHealthMonitor()
         cancelCrashRestart()
+        
+        // Stop kiro-proxy sidecar
+        kiroProxy.stop()
         
         // Stop ProxyBridge first if running
         if proxyBridge.isRunning {
