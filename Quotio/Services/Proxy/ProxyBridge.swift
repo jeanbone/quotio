@@ -108,6 +108,9 @@ final class ProxyBridge {
     /// The port CLIProxyAPI runs on (internal port)
     private(set) var targetPort: UInt16 = 18080
     
+    /// The port kiro-proxy sidecar runs on (for kiro-prefixed models)
+    private(set) var kiroProxyPort: UInt16 = 0
+    
     /// Target host (always localhost)
     private let targetHost = "127.0.0.1"
     
@@ -131,6 +134,9 @@ final class ProxyBridge {
     
     /// Callback for request metadata extraction (for RequestTracker)
     var onRequestCompleted: ((RequestMetadata) -> Void)?
+    
+    /// Callback when the listener fails unexpectedly (for CLIProxyManager to attempt recovery)
+    var onListenerFailed: (() -> Void)?
     
     // MARK: - Request Metadata
 
@@ -162,9 +168,11 @@ final class ProxyBridge {
     /// - Parameters:
     ///   - listenPort: The port to listen on (user-facing)
     ///   - targetPort: The port CLIProxyAPI runs on
-    func configure(listenPort: UInt16, targetPort: UInt16) {
+    ///   - kiroProxyPort: The port kiro-proxy sidecar runs on (0 = disabled)
+    func configure(listenPort: UInt16, targetPort: UInt16, kiroProxyPort: UInt16 = 0) {
         self.listenPort = listenPort
         self.targetPort = targetPort
+        self.kiroProxyPort = kiroProxyPort
     }
     
     /// Calculate internal port from user port (offset by 10000)
@@ -243,6 +251,7 @@ final class ProxyBridge {
         case .failed(let error):
             isRunning = false
             lastError = error.localizedDescription
+            onListenerFailed?()
         case .cancelled:
             isRunning = false
         default:
@@ -445,7 +454,21 @@ final class ProxyBridge {
                 resolvedBody = body
             }
 
-            let targetPortValue = self.targetPort
+            // Determine target port: route kiro-prefixed models to kiro-proxy sidecar
+            let resolvedModel = metadata.1 ?? ""  // model from metadata
+            let effectiveModel: String
+            if fallbackContext.hasFallback, let entry = fallbackContext.currentEntry {
+                effectiveModel = entry.modelId
+            } else {
+                effectiveModel = resolvedModel
+            }
+            
+            let targetPortValue: UInt16
+            if self.kiroProxyPort != 0 && effectiveModel.hasPrefix("kiro-") {
+                targetPortValue = self.kiroProxyPort
+            } else {
+                targetPortValue = self.targetPort
+            }
             let targetHostValue = self.targetHost
 
             self.forwardRequest(
@@ -461,7 +484,9 @@ final class ProxyBridge {
                 metadata: metadata,
                 targetPort: targetPortValue,
                 targetHost: targetHostValue,
-                fallbackContext: fallbackContext
+                fallbackContext: fallbackContext,
+                kiroProxyPort: self.kiroProxyPort,
+                mainProxyPort: self.targetPort
             )
         }
     }
@@ -664,7 +689,9 @@ final class ProxyBridge {
         metadata: (provider: String?, model: String?, method: String, path: String),
         targetPort: UInt16,
         targetHost: String,
-        fallbackContext: FallbackContext
+        fallbackContext: FallbackContext,
+        kiroProxyPort: UInt16 = 0,
+        mainProxyPort: UInt16 = 0
     ) {
         // Create connection to CLIProxyAPI
         guard let port = NWEndpoint.Port(rawValue: targetPort) else {
@@ -703,6 +730,7 @@ final class ProxyBridge {
         let capturedMethod = method
         let capturedPath = path
         let capturedVersion = version
+        let capturedBody = body
 
         targetConnection.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
@@ -754,7 +782,9 @@ final class ProxyBridge {
                             path: capturedPath,
                             version: capturedVersion,
                             targetPort: targetPort,
-                            targetHost: targetHost
+                            targetHost: targetHost,
+                            kiroProxyPort: kiroProxyPort,
+                            mainProxyPort: mainProxyPort
                         )
                     }
                 })
@@ -788,7 +818,10 @@ final class ProxyBridge {
         path: String,
         version: String,
         targetPort: UInt16,
-        targetHost: String
+        targetHost: String,
+        kiroProxyPort: UInt16 = 0,
+        mainProxyPort: UInt16 = 0,
+        requestBody: String = ""
     ) {
         targetConnection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
@@ -811,6 +844,26 @@ final class ProxyBridge {
 
             // Check for quota exceeded BEFORE forwarding to client (within first 4KB to catch streaming errors)
             let quotaCheckThreshold = 4096
+
+            // Auto-fallback to kiro-proxy when CLIProxyAPI returns "unknown provider" error
+            if accumulatedResponse.count <= quotaCheckThreshold && !accumulatedResponse.isEmpty
+                && kiroProxyPort != 0 && targetPort != kiroProxyPort {
+                if let bodyStr = String(data: accumulatedResponse, encoding: .utf8),
+                   bodyStr.contains("unknown provider for model") {
+                    targetConnection.cancel()
+                    let retryBody = fallbackContext.originalBody.isEmpty ? requestBody : fallbackContext.originalBody
+                    self.forwardRequest(
+                        method: method, path: path, version: version, headers: headers,
+                        body: retryBody,
+                        originalConnection: originalConnection, connectionId: connectionId,
+                        startTime: startTime, requestSize: requestSize, metadata: metadata,
+                        targetPort: kiroProxyPort, targetHost: targetHost,
+                        fallbackContext: fallbackContext, kiroProxyPort: kiroProxyPort, mainProxyPort: mainProxyPort
+                    )
+                    return
+                }
+            }
+
             if accumulatedResponse.count <= quotaCheckThreshold && !accumulatedResponse.isEmpty && fallbackContext.hasFallback {
                 let fallbackReason = self.fallbackReason(responseData: accumulatedResponse)
 
@@ -839,7 +892,9 @@ final class ProxyBridge {
                                 metadata: metadata,
                                 targetPort: targetPort,
                                 targetHost: targetHost,
-                                fallbackContext: retryContext
+                                fallbackContext: retryContext,
+                                kiroProxyPort: kiroProxyPort,
+                                mainProxyPort: mainProxyPort
                             )
                             return
                         }
@@ -875,6 +930,14 @@ final class ProxyBridge {
 
                         let nextBody = self.replaceModelInBody(fallbackContext.originalBody, with: nextEntry.modelId)
 
+                        // Route kiro-prefixed fallback models to kiro-proxy sidecar
+                        let nextTargetPort: UInt16
+                        if kiroProxyPort != 0 && nextEntry.modelId.hasPrefix("kiro-") {
+                            nextTargetPort = kiroProxyPort
+                        } else {
+                            nextTargetPort = mainProxyPort != 0 ? mainProxyPort : targetPort
+                        }
+
                         self.forwardRequest(
                             method: method,
                             path: path,
@@ -886,9 +949,11 @@ final class ProxyBridge {
                             startTime: startTime,
                             requestSize: requestSize,
                             metadata: metadata,
-                            targetPort: targetPort,
+                            targetPort: nextTargetPort,
                             targetHost: targetHost,
-                            fallbackContext: nextContext
+                            fallbackContext: nextContext,
+                            kiroProxyPort: kiroProxyPort,
+                            mainProxyPort: mainProxyPort != 0 ? mainProxyPort : targetPort
                         )
                     }
                     return
@@ -931,7 +996,9 @@ final class ProxyBridge {
                                 path: path,
                                 version: version,
                                 targetPort: targetPort,
-                                targetHost: targetHost
+                                targetHost: targetHost,
+                                kiroProxyPort: kiroProxyPort,
+                                mainProxyPort: mainProxyPort
                             )
                         }
                     }

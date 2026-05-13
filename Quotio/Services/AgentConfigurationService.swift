@@ -1555,20 +1555,63 @@ actor AgentConfigurationService {
            let kiroURL = URL(string: "\(kiroBaseURL)/v1/models") {
             var kiroRequest = URLRequest(url: kiroURL)
             kiroRequest.timeoutInterval = 5
+
+            // kiro-proxy needs a valid bearer token to call AWS ListAvailableModels
+            let kiroToken = Self.readKiroAccessToken()
+            if let token = kiroToken {
+                kiroRequest.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+
+            var kiroFetched = false
             if let (kiroData, kiroResp) = try? await session.data(for: kiroRequest),
                let httpResp = kiroResp as? HTTPURLResponse, httpResp.statusCode == 200,
-               let kiroDecoded = try? JSONDecoder().decode(ModelsResponse.self, from: kiroData) {
+               let kiroDecoded = try? JSONDecoder().decode(ModelsResponse.self, from: kiroData),
+               !kiroDecoded.data.isEmpty {
                 let kiroModels = kiroDecoded.data.map {
                     AvailableModel(id: $0.id, name: $0.id, provider: $0.owned_by ?? "kiro", isDefault: false)
                 }
                 let existingIds = Set(models.map(\.id))
                 models.append(contentsOf: kiroModels.filter { !existingIds.contains($0.id) })
+                kiroFetched = true
+            }
+
+            // Fallback: if kiro auth file exists but dynamic fetch failed, inject static kiro models
+            if !kiroFetched && kiroToken != nil {
+                let staticKiroModels = Self.staticKiroModels
+                let existingIds = Set(models.map(\.id))
+                models.append(contentsOf: staticKiroModels.filter { !existingIds.contains($0.id) })
             }
         }
 
         return models
     }
-    
+
+    // MARK: - Kiro Model Helpers
+
+    /// Read access token from the first kiro auth file in ~/.cli-proxy-api/
+    private static func readKiroAccessToken() -> String? {
+        let authDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cli-proxy-api").path
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: authDir) else { return nil }
+        for file in files where file.hasPrefix("kiro-") && file.hasSuffix(".json") {
+            let path = (authDir as NSString).appendingPathComponent(file)
+            guard let data = FileManager.default.contents(atPath: path),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let token = json["access_token"] as? String else { continue }
+            return token
+        }
+        return nil
+    }
+
+    /// Static kiro model list as fallback when dynamic fetch fails
+    private static let staticKiroModels: [AvailableModel] = [
+        AvailableModel(id: "kiro-claude-sonnet-4-6", name: "kiro-claude-sonnet-4-6", provider: "kiro", isDefault: false),
+        AvailableModel(id: "kiro-claude-sonnet-4-5", name: "kiro-claude-sonnet-4-5", provider: "kiro", isDefault: false),
+        AvailableModel(id: "kiro-claude-opus-4-7-agentic", name: "kiro-claude-opus-4-7-agentic", provider: "kiro", isDefault: false),
+        AvailableModel(id: "kiro-claude-opus-4-6-agentic", name: "kiro-claude-opus-4-6-agentic", provider: "kiro", isDefault: false),
+        AvailableModel(id: "kiro-claude-opus-4-5-agentic", name: "kiro-claude-opus-4-5-agentic", provider: "kiro", isDefault: false),
+        AvailableModel(id: "kiro-claude-haiku-4-5", name: "kiro-claude-haiku-4-5", provider: "kiro", isDefault: false),
+    ]
+
     func testConnection(agent: CLIAgent, config: AgentConfiguration) async -> ConnectionTestResult {
         let startTime = Date()
         

@@ -985,7 +985,11 @@ final class QuotaViewModel {
                 self?.requestTracker.addRequest(from: metadata)
             }
             
-            try await proxyManager.start()
+            // Try to adopt an already-running CLIProxyAPI (e.g., after Quotio restart)
+            let adopted = await proxyManager.adoptRunningProxy()
+            if !adopted {
+                try await proxyManager.start()
+            }
             setupAPIClient()
             startAutoRefresh()
             restartWarmupScheduler()
@@ -1428,15 +1432,25 @@ final class QuotaViewModel {
             if method == .kiroImport {
                 oauthState = OAuthState(provider: .kiro, status: .polling, error: "Importing quotas...")
 
-                // Allow some time for file operations
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-
+                // Refresh token first (it may be expired)
                 let refreshedCount = await kiroFetcher.refreshAllTokensIfNeeded()
                 if refreshedCount > 0 {
                     Log.quota("[Kiro] Refreshed \(refreshedCount) token(s) after import")
                 }
 
+                // Restart proxy to reload auth files
+                if proxyManager.proxyStatus.running {
+                    proxyManager.stop()
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    try? await proxyManager.start()
+                    setupAPIClient()
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+
                 await refreshData()
+
+                // Refresh model list so kiro models appear in agents/fallback
+                _ = await agentSetupViewModel.loadModels(forceRefresh: true)
 
                 // For import, we assume success if the command succeeded
                 oauthState = OAuthState(provider: .kiro, status: .success)

@@ -831,6 +831,46 @@ final class CLIProxyManager {
         return nil
     }
     
+    /// Attempt to adopt an already-running CLIProxyAPI process (e.g., after Quotio restart).
+    /// Returns true if a running proxy was found and adopted.
+    func adoptRunningProxy() async -> Bool {
+        guard !proxyStatus.running else { return true }
+
+        let targetPort = useBridgeMode ? internalPort : proxyStatus.port
+
+        let isHealthy = await compatibilityChecker.isHealthy(
+            port: targetPort,
+            managementKey: managementKey
+        )
+
+        guard isHealthy else { return false }
+
+        NSLog("[CLIProxyManager] Found running CLIProxyAPI on port \(targetPort), adopting...")
+
+        if useBridgeMode {
+            let userPort = proxyStatus.port
+            proxyBridge.configure(listenPort: userPort, targetPort: targetPort, kiroProxyPort: kiroProxyPort)
+            proxyBridge.onListenerFailed = { [weak self] in
+                Task { @MainActor in
+                    self?.handleBridgeFailure()
+                }
+            }
+            proxyBridge.start()
+
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            guard proxyBridge.isRunning else {
+                NSLog("[CLIProxyManager] Failed to start ProxyBridge for adopted proxy")
+                return false
+            }
+        }
+
+        proxyStatus.running = true
+        startHealthMonitor()
+        NSLog("[CLIProxyManager] Successfully adopted running proxy")
+        return true
+    }
+
     func start(resetCrashRecoveryState: Bool = true) async throws {
         guard isBinaryInstalled else {
             throw ProxyError.binaryNotFound
@@ -956,6 +996,11 @@ final class CLIProxyManager {
             // If bridge mode is enabled, start ProxyBridge
             if bridgeEnabled {
                 proxyBridge.configure(listenPort: userPort, targetPort: cliProxyPort, kiroProxyPort: kiroProxyPort)
+                proxyBridge.onListenerFailed = { [weak self] in
+                    Task { @MainActor in
+                        self?.handleBridgeFailure()
+                    }
+                }
                 proxyBridge.start()
                 
                 // Wait a bit for ProxyBridge to start
@@ -1046,6 +1091,63 @@ final class CLIProxyManager {
         proxyStatus.running = false
     }
     
+    // ════════════════════════════════════════════════════════════════════════
+    // MARK: - Bridge Recovery
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// Maximum consecutive bridge restart attempts before giving up
+    private let maxBridgeRestartAttempts = 3
+
+    /// Current bridge restart attempt count
+    private var bridgeRestartAttempts = 0
+
+    /// Called when ProxyBridge's NWListener enters .failed state while CLIProxyAPI may still be running.
+    private func handleBridgeFailure() {
+        // Only attempt recovery if we believe the proxy should be running
+        guard proxyStatus.running || process?.isRunning == true else { return }
+
+        guard bridgeRestartAttempts < maxBridgeRestartAttempts else {
+            NSLog("[CLIProxyManager] Max bridge restart attempts reached, stopping proxy")
+            bridgeRestartAttempts = 0
+            stop()
+            scheduleCrashRestart(exitCode: -2)
+            return
+        }
+
+        bridgeRestartAttempts += 1
+        NSLog("[CLIProxyManager] ProxyBridge listener failed, attempting restart (\(bridgeRestartAttempts)/\(maxBridgeRestartAttempts))")
+
+        Task {
+            // Small delay before retry
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            guard self.process?.isRunning == true else {
+                // CLIProxyAPI also died, let terminationHandler handle it
+                return
+            }
+
+            let userPort = self.proxyStatus.port
+            let cliProxyPort = self.internalPort
+
+            self.proxyBridge.stop()
+            try? await Task.sleep(nanoseconds: 200_000_000)
+
+            self.proxyBridge.configure(listenPort: userPort, targetPort: cliProxyPort, kiroProxyPort: self.kiroProxyPort)
+            self.proxyBridge.start()
+
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            if self.proxyBridge.isRunning {
+                NSLog("[CLIProxyManager] ProxyBridge recovered successfully")
+                self.proxyStatus.running = true
+                self.bridgeRestartAttempts = 0
+            } else {
+                // Retry
+                self.handleBridgeFailure()
+            }
+        }
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // MARK: - Health Monitoring
     // ════════════════════════════════════════════════════════════════════════
@@ -1257,6 +1359,73 @@ final class CLIProxyManager {
         }
     }
     
+    // MARK: - Native Kiro Import
+
+    /// Import Kiro IDE token directly without relying on CLIProxyAPI binary.
+    /// Reads ~/.aws/sso/cache/kiro-auth-token.json and writes CLIProxyAPI-format auth file.
+    private func performNativeKiroImport() -> AuthCommandResult {
+        let fm = FileManager.default
+        let cachePath = NSString(string: "~/.aws/sso/cache").expandingTildeInPath
+        let tokenPath = (cachePath as NSString).appendingPathComponent("kiro-auth-token.json")
+
+        // 1. Read Kiro IDE token
+        guard let data = fm.contents(atPath: tokenPath),
+              let token = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accessToken = token["accessToken"] as? String,
+              let refreshToken = token["refreshToken"] as? String else {
+            return AuthCommandResult(success: false, message: "Kiro IDE token not found at ~/.aws/sso/cache/kiro-auth-token.json. Please login in Kiro IDE first.", deviceCode: nil)
+        }
+
+        let expiresAt = token["expiresAt"] as? String ?? ""
+        let region = token["region"] as? String ?? "us-east-1"
+        let authMethod = token["authMethod"] as? String ?? "IdC"
+        let provider = token["provider"] as? String ?? "Enterprise"
+        let clientIdHash = token["clientIdHash"] as? String
+
+        // 2. Load device registration (clientId + clientSecret)
+        var clientId = ""
+        var clientSecret = ""
+        if let hash = clientIdHash {
+            let regPath = (cachePath as NSString).appendingPathComponent("\(hash).json")
+            if let regData = fm.contents(atPath: regPath),
+               let reg = try? JSONSerialization.jsonObject(with: regData) as? [String: Any] {
+                clientId = reg["clientId"] as? String ?? ""
+                clientSecret = reg["clientSecret"] as? String ?? ""
+            }
+        }
+
+        // 3. Build CLIProxyAPI auth file
+        let authFile: [String: Any] = [
+            "access_token": accessToken,
+            "refresh_token": refreshToken,
+            "expires_at": expiresAt,
+            "region": region,
+            "auth_method": authMethod,
+            "client_id": clientId,
+            "client_secret": clientSecret,
+            "provider": provider,
+            "type": "kiro",
+            "email": "",
+            "profile_arn": "",
+            "last_refresh": ISO8601DateFormatter().string(from: Date())
+        ]
+
+        // 4. Write to auth directory
+        let typeName = provider.lowercased()
+        let port = proxyStatus.port
+        let filename = "kiro-\(typeName)-\(port).json"
+        let destPath = (authDir as NSString).appendingPathComponent(filename)
+
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: authFile, options: [.prettyPrinted, .sortedKeys])
+            try jsonData.write(to: URL(fileURLWithPath: destPath), options: .atomic)
+            NSLog("[CLIProxyManager] Kiro IDE token imported to \(filename)")
+            return AuthCommandResult(success: true, message: "Successfully imported Kiro IDE token.", deviceCode: nil)
+        } catch {
+            return AuthCommandResult(success: false, message: "Failed to write auth file: \(error.localizedDescription)", deviceCode: nil)
+        }
+    }
+
     func terminateAuthProcess() {
         guard let authProcess = authProcess, authProcess.isRunning else { return }
         authProcess.terminate()
@@ -1362,6 +1531,11 @@ struct AuthCommandResult {
 extension CLIProxyManager {
     
     func runAuthCommand(_ command: AuthCommand) async -> AuthCommandResult {
+        // Native implementation for kiro-import (doesn't require CLIProxyAPI binary support)
+        if command == .kiroImport {
+            return performNativeKiroImport()
+        }
+
         terminateAuthProcess()
         
         guard isBinaryInstalled else {
