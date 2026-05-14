@@ -867,8 +867,27 @@ final class CLIProxyManager {
 
         proxyStatus.running = true
         startHealthMonitor()
+
+        // Start kiro-proxy sidecar if kiro auth file exists
+        if hasKiroAuthFile() {
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await self.kiroProxy.start(port: self.kiroProxyPort)
+                } catch {
+                    NSLog("[CLIProxyManager] kiro-proxy failed to start: \(error.localizedDescription)")
+                }
+            }
+        }
+
         NSLog("[CLIProxyManager] Successfully adopted running proxy")
         return true
+    }
+
+    /// Check if any kiro auth file exists in the auth directory
+    private func hasKiroAuthFile() -> Bool {
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: authDir) else { return false }
+        return files.contains { $0.hasPrefix("kiro-") && $0.hasSuffix(".json") }
     }
 
     func start(resetCrashRecoveryState: Bool = true) async throws {

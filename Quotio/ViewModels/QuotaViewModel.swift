@@ -1500,6 +1500,12 @@ final class QuotaViewModel {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                 }
 
+                // Start kiro-proxy sidecar if not already running
+                if !proxyManager.kiroProxy.running {
+                    try? await proxyManager.kiroProxy.start(port: proxyManager.kiroProxyPort)
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                }
+
                 await refreshData()
 
                 // Refresh model list so kiro models appear in agents/fallback

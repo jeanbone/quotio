@@ -1550,6 +1550,7 @@ actor AgentConfigurationService {
         }
 
         // Also fetch models from kiro-proxy sidecar if running
+        var kiroFetched = false
         let kiroBaseURL = await CLIProxyManager.shared.kiroProxy.baseURL
         if let kiroBaseURL,
            let kiroURL = URL(string: "\(kiroBaseURL)/v1/models") {
@@ -1562,7 +1563,6 @@ actor AgentConfigurationService {
                 kiroRequest.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             }
 
-            var kiroFetched = false
             if let (kiroData, kiroResp) = try? await session.data(for: kiroRequest),
                let httpResp = kiroResp as? HTTPURLResponse, httpResp.statusCode == 200,
                let kiroDecoded = try? JSONDecoder().decode(ModelsResponse.self, from: kiroData),
@@ -1574,13 +1574,12 @@ actor AgentConfigurationService {
                 models.append(contentsOf: kiroModels.filter { !existingIds.contains($0.id) })
                 kiroFetched = true
             }
+        }
 
-            // Fallback: if kiro auth file exists but dynamic fetch failed, inject static kiro models
-            if !kiroFetched && kiroToken != nil {
-                let staticKiroModels = Self.staticKiroModels
-                let existingIds = Set(models.map(\.id))
-                models.append(contentsOf: staticKiroModels.filter { !existingIds.contains($0.id) })
-            }
+        // Fallback: if kiro auth file exists but dynamic fetch failed, inject static kiro models
+        if !kiroFetched && Self.readKiroAccessToken() != nil {
+            let existingIds = Set(models.map(\.id))
+            models.append(contentsOf: Self.staticKiroModels.filter { !existingIds.contains($0.id) })
         }
 
         return models
