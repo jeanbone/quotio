@@ -276,9 +276,16 @@ final class QuotaViewModel {
         let autoStartProxy = UserDefaults.standard.bool(forKey: "autoStartProxy")
         if autoStartProxy && proxyManager.isBinaryInstalled {
             await startProxy()
-            // Note: checkForProxyUpgrade() is now called inside startProxy()
+        } else if await proxyManager.adoptRunningProxy() {
+            // Binary not installed but proxy already running — adopt it
+            proxyManager.proxyBridge.onRequestCompleted = { [weak self] metadata in
+                self?.requestTracker.addRequest(from: metadata)
+            }
+            setupAPIClient()
+            startAutoRefresh()
+            requestTracker.start()
+            await refreshData()
         } else {
-            // If not auto-starting proxy, start quota auto-refresh
             startQuotaAutoRefreshWithoutProxy()
         }
     }

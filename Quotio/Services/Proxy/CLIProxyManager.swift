@@ -1148,6 +1148,40 @@ final class CLIProxyManager {
         }
     }
 
+    /// Periodic check: if CLIProxyAPI is healthy but ProxyBridge is down, recover.
+    /// This catches cases where stop→start race conditions leave ProxyBridge dead.
+    private func checkBridgeConsistency() async {
+        guard useBridgeMode else { return }
+        guard !proxyBridge.isRunning else { return }
+
+        // Check if CLIProxyAPI is actually responding
+        let isHealthy = await compatibilityChecker.isHealthy(
+            port: internalPort,
+            managementKey: managementKey
+        )
+        guard isHealthy else { return }
+
+        NSLog("[CLIProxyManager] Consistency check: CLIProxyAPI healthy but ProxyBridge down, recovering...")
+
+        proxyBridge.stop()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        proxyBridge.configure(listenPort: proxyStatus.port, targetPort: internalPort, kiroProxyPort: kiroProxyPort)
+        proxyBridge.onListenerFailed = { [weak self] in
+            Task { @MainActor in
+                self?.handleBridgeFailure()
+            }
+        }
+        proxyBridge.start()
+
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        if proxyBridge.isRunning {
+            proxyStatus.running = true
+            NSLog("[CLIProxyManager] ProxyBridge recovered via consistency check")
+        }
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // MARK: - Health Monitoring
     // ════════════════════════════════════════════════════════════════════════
@@ -1162,6 +1196,7 @@ final class CLIProxyManager {
                 guard !Task.isCancelled else { break }
                 
                 await self?.performHealthCheck()
+                await self?.checkBridgeConsistency()
             }
         }
     }
@@ -1219,7 +1254,11 @@ final class CLIProxyManager {
             }
 
             do {
-                try await self.start(resetCrashRecoveryState: false)
+                // Try adopting first — CLIProxyAPI may still be running (only bridge died)
+                let adopted = await self.adoptRunningProxy()
+                if !adopted {
+                    try await self.start(resetCrashRecoveryState: false)
+                }
                 NSLog("[CLIProxyManager] Crash auto-restart successful")
             } catch {
                 self.lastError = "Auto-restart failed: \(error.localizedDescription)"
