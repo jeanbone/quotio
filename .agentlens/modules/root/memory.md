@@ -5,31 +5,9 @@
 ## Summary
 
 | High 🔴 | Medium 🟡 | Low 🟢 |
-| 1 | 0 | 15 |
-
-## 🔴 High Priority
-
-### `WARNING` (Quotio/Services/LaunchAtLoginManager.swift:97)
-
-> if app is not in /Applications (registration may fail or be non-persistent)
+| 0 | 0 | 11 |
 
 ## 🟢 Low Priority
-
-### `NOTE` (Quotio/Services/AgentDetectionService.swift:16)
-
-> Only checks file existence (metadata), does NOT read file content
-
-### `NOTE` (Quotio/Services/AgentDetectionService.swift:92)
-
-> May not work in GUI apps due to limited PATH inheritance
-
-### `NOTE` (Quotio/Services/AgentDetectionService.swift:98)
-
-> Only checks file existence (metadata), does NOT read file content
-
-### `NOTE` (Quotio/Services/CLIExecutor.swift:33)
-
-> Only checks file existence (metadata), does NOT read file content
 
 ### `NOTE` (Quotio/Services/Proxy/CLIProxyManager.swift:244)
 
@@ -39,7 +17,7 @@
 
 > Changes take effect after proxy restart (CLIProxyAPI does not support live routing API)
 
-### `NOTE` (Quotio/Services/Proxy/CLIProxyManager.swift:1605)
+### `NOTE` (Quotio/Services/Proxy/CLIProxyManager.swift:1648)
 
 > Notification is handled by AtomFeedUpdateService polling
 
@@ -59,19 +37,19 @@
 
 > Cursor and Trae removed from auto-refresh to address privacy concerns (issue #29)
 
-### `NOTE` (Quotio/ViewModels/QuotaViewModel.swift:1181)
+### `NOTE` (Quotio/ViewModels/QuotaViewModel.swift:1225)
 
 > Cursor and Trae removed from auto-refresh (issue #29)
 
-### `NOTE` (Quotio/ViewModels/QuotaViewModel.swift:1206)
+### `NOTE` (Quotio/ViewModels/QuotaViewModel.swift:1252)
 
 > Cursor and Trae require explicit user scan (issue #29)
 
-### `NOTE` (Quotio/ViewModels/QuotaViewModel.swift:1216)
+### `NOTE` (Quotio/ViewModels/QuotaViewModel.swift:1262)
 
 > Cursor and Trae removed - require explicit scan (issue #29)
 
-### `NOTE` (Quotio/ViewModels/QuotaViewModel.swift:1271)
+### `NOTE` (Quotio/ViewModels/QuotaViewModel.swift:1317)
 
 > Don't call detectActiveAccount() here - already set by switch operation
 
