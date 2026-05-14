@@ -126,7 +126,7 @@ final class QuotaViewModel {
     // MARK: - IDE Quota Persistence Keys
 
     private static let ideQuotasKey = "persisted.ideQuotas"
-    private static let ideProvidersToSave: Set<AIProvider> = [.cursor, .trae]
+    private static let ideProvidersToSave: Set<AIProvider> = [.trae]
 
     /// Key for tracking when auth files last changed (for model cache invalidation)
     static let authFilesChangedKey = "quotio.authFiles.lastChanged"
