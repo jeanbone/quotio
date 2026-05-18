@@ -331,4 +331,26 @@ final class NotificationManager {
         
         UNUserNotificationCenter.current().add(request)
     }
+
+    /// Notify user that Kiro token is invalid and re-import from Kiro IDE is needed
+    func notifyKiroTokenExpired() {
+        guard notificationsEnabled && isAuthorized else { return }
+
+        let notificationId = "kiro_token_expired"
+        guard !sentNotifications.contains(notificationId) else { return }
+        sentNotifications.insert(notificationId)
+
+        let content = UNMutableNotificationContent()
+        content.title = "Kiro Token Expired"
+        content.body = "Kiro session is invalid. Please re-login in Kiro IDE and import again."
+        content.sound = .defaultCritical
+
+        let request = UNNotificationRequest(
+            identifier: notificationId,
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request)
+    }
 }

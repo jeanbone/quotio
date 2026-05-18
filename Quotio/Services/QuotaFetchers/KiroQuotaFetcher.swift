@@ -264,6 +264,10 @@ actor KiroQuotaFetcher {
                 tokenExpiresAt = newExpiry
                 hasAttemptedRefresh = true
             } else {
+                // Notify user that Kiro token is invalid and re-import is needed
+                await MainActor.run {
+                    NotificationManager.shared.notifyKiroTokenExpired()
+                }
                 return ProviderQuotaData(
                     models: [ModelQuota(name: "Error", percentage: 0, resetTime: "Token Refresh Failed")],
                     lastUpdated: Date(),
