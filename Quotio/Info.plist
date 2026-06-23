@@ -10,7 +10,7 @@
     <string>HBpWFjUcNUuuZfdxhVlw2Mc87IT8tj1C68rufluZ0M4=</string>
     
     <key>SUEnableAutomaticChecks</key>
-    <true/>
+    <false/>
     
     <key>SUScheduledCheckInterval</key>
     <integer>86400</integer>
