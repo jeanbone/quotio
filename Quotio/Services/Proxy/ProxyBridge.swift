@@ -518,9 +518,21 @@ final class ProxyBridge {
             return .empty
         }
 
-        let entries = virtualModel.sortedEntries
+        var entries = virtualModel.sortedEntries
         guard !entries.isEmpty else {
             return .empty
+        }
+
+        var attempts: [FallbackAttempt] = []
+        if shouldSkipKiroFallback(for: body) {
+            let skippedKiroEntries = entries.filter { $0.modelId.hasPrefix("kiro-") }
+            entries.removeAll { $0.modelId.hasPrefix("kiro-") }
+            attempts.append(contentsOf: skippedKiroEntries.map {
+                FallbackAttempt(entry: $0, outcome: .skipped, reason: .pattern("unsupported Kiro request payload"))
+            })
+            guard !entries.isEmpty else {
+                return .empty
+            }
         }
 
         // Get cached entry ID and find its current index (handles reordering correctly)
@@ -534,7 +546,6 @@ final class ProxyBridge {
             }
         }
 
-        var attempts: [FallbackAttempt] = []
         if wasLoadedFromCache, startIndex < entries.count {
             let cachedEntry = entries[startIndex]
             attempts.append(FallbackAttempt(entry: cachedEntry, outcome: .skipped, reason: .cachedRoute))
@@ -552,6 +563,40 @@ final class ProxyBridge {
     }
 
     // MARK: - Request Body Transformation
+
+    private nonisolated func shouldSkipKiroFallback(for body: String) -> Bool {
+        // kiro-proxy can strip thinking and text-only tool results, but Q Developer is
+        // brittle with very large Claude Code payloads containing binary/media-style
+        // blocks. Skip Kiro only for those obvious cases so normal text/tool requests
+        // still consume Kiro quota.
+        guard body.utf8.count > 300_000,
+              let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) else {
+            return false
+        }
+        return containsKiroUnsupportedMedia(json)
+    }
+
+    private nonisolated func containsKiroUnsupportedMedia(_ value: Any) -> Bool {
+        if let dict = value as? [String: Any] {
+            if let type = dict["type"] as? String {
+                if type == "image" || type == "document" || type == "tool_result" && containsKiroUnsupportedMedia(dict["content"] as Any) {
+                    return true
+                }
+                if type.contains("computer") || type.contains("screenshot") {
+                    return true
+                }
+            }
+            if dict["source"] is [String: Any] {
+                return true
+            }
+            return dict.values.contains { containsKiroUnsupportedMedia($0) }
+        }
+        if let array = value as? [Any] {
+            return array.contains { containsKiroUnsupportedMedia($0) }
+        }
+        return false
+    }
 
     private nonisolated func replaceModelInBody(
         _ body: String,
