@@ -1476,8 +1476,8 @@ final class QuotaViewModel {
     }
     
     private func startKiroAuth(method: AuthCommand) async {
-        oauthState = OAuthState(provider: .kiro, status: .waiting)
-        
+        oauthState = OAuthState(provider: .kiro, status: .waiting, error: method == .kiroImport ? "Importing from Kiro..." : nil)
+
         let result = await proxyManager.runAuthCommand(method)
         
         if result.success {

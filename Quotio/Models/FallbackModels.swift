@@ -82,7 +82,7 @@ struct FallbackEntry: Codable, Identifiable, Hashable, Sendable {
 /// A virtual model with a fallback chain
 /// Example: "quotio-opus-4-6-thinking" with fallback entries:
 ///   1. Antigravity → gemini-claude-opus-4-6-thinking
-///   2. Kiro → kiro-claude-opus-4-6-agentic
+///   2. Kiro → kiro-claude-opus-4-7-agentic
 ///   3. Claude Code → claude-opus-4-6-thinking
 struct VirtualModel: Codable, Identifiable, Hashable, Sendable {
     let id: UUID

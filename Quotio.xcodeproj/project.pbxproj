@@ -7,10 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		KIROPROXYBUILD0000000000001 /* kiro-proxy in Resources */ = {isa = PBXBuildFile; fileRef = KIROPROXYFILE00000000000001 /* kiro-proxy */; };
 		782F8F9C2EFD797D00CE18C5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 78D386B12EFBF30500C40FB6 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		KIROPROXYFILE00000000000001 /* kiro-proxy */ = {isa = PBXFileReference; lastKnownFileType = file; path = Quotio/Resources/Proxy/kiro-proxy; sourceTree = "<group>"; };
 		78D386942EFBF30400C40FB6 /* Quotio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Quotio.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		78D386B22EFBF30500C40FB6 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		78D386B32EFBF30500C40FB6 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
@@ -147,6 +149,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				KIROPROXYBUILD0000000000001 /* kiro-proxy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
