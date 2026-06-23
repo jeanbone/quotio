@@ -5,6 +5,7 @@
 
 import Foundation
 import AppKit
+import SQLite3
 
 @MainActor
 @Observable
@@ -1463,30 +1464,150 @@ final class CLIProxyManager {
     // MARK: - Native Kiro Import
 
     /// Import Kiro IDE token directly without relying on CLIProxyAPI binary.
-    /// Reads ~/.aws/sso/cache/kiro-auth-token.json and writes CLIProxyAPI-format auth file.
+    /// Reads current kiro-cli SQLite auth storage first, then falls back to legacy AWS SSO cache files.
     private func performNativeKiroImport() -> AuthCommandResult {
+        NSLog("[CLIProxyManager] Starting native Kiro import")
+        guard let auth = readKiroCLIAuth() ?? readLegacyKiroIDEAuth() else {
+            return AuthCommandResult(
+                success: false,
+                message: "Kiro auth token not found. Please login in Kiro IDE or kiro-cli first.",
+                deviceCode: nil
+            )
+        }
+
+        let authFile: [String: Any] = [
+            "access_token": auth.accessToken,
+            "refresh_token": auth.refreshToken,
+            "expires_at": auth.expiresAt,
+            "region": auth.region,
+            "auth_method": auth.authMethod,
+            "client_id": auth.clientId,
+            "client_secret": auth.clientSecret,
+            "provider": auth.provider,
+            "type": "kiro",
+            "email": "",
+            "profile_arn": auth.profileArn,
+            "last_refresh": ISO8601DateFormatter().string(from: Date())
+        ]
+
+        let typeName = auth.provider.lowercased()
+        let port = proxyStatus.port
+        let filename = "kiro-\(typeName)-\(port).json"
+        let destPath = (authDir as NSString).appendingPathComponent(filename)
+
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: authFile, options: [.prettyPrinted, .sortedKeys])
+            try jsonData.write(to: URL(fileURLWithPath: destPath), options: .atomic)
+            NSLog("[CLIProxyManager] Kiro token imported from \(auth.source) to \(filename)")
+            return AuthCommandResult(success: true, message: "Successfully imported Kiro token from \(auth.source).", deviceCode: nil)
+        } catch {
+            return AuthCommandResult(success: false, message: "Failed to write auth file: \(error.localizedDescription)", deviceCode: nil)
+        }
+    }
+
+    private struct KiroImportedAuth {
+        let accessToken: String
+        let refreshToken: String
+        let expiresAt: String
+        let region: String
+        let authMethod: String
+        let provider: String
+        let profileArn: String
+        let clientId: String
+        let clientSecret: String
+        let source: String
+    }
+
+    private func readKiroCLIAuth() -> KiroImportedAuth? {
+        let dbPath = NSString(string: "~/Library/Application Support/kiro-cli/data.sqlite3").expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: dbPath) else { return nil }
+
+        guard let tokenJSON = readKiroCLIAuthKV(dbPath: dbPath, key: "kirocli:odic:token"),
+              let regJSON = readKiroCLIAuthKV(dbPath: dbPath, key: "kirocli:odic:device-registration"),
+              let tokenData = tokenJSON.data(using: .utf8),
+              let regData = regJSON.data(using: .utf8),
+              let token = try? JSONSerialization.jsonObject(with: tokenData) as? [String: Any],
+              let reg = try? JSONSerialization.jsonObject(with: regData) as? [String: Any],
+              let accessToken = token["access_token"] as? String,
+              let refreshToken = token["refresh_token"] as? String else {
+            return nil
+        }
+
+        return KiroImportedAuth(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            expiresAt: token["expires_at"] as? String ?? "",
+            region: (token["region"] as? String) ?? readKiroCLIStateString(dbPath: dbPath, key: "auth.idc.region") ?? "us-east-1",
+            authMethod: "IdC",
+            provider: "Enterprise",
+            profileArn: readKiroCLIProfileArn(dbPath: dbPath) ?? "",
+            clientId: reg["client_id"] as? String ?? "",
+            clientSecret: reg["client_secret"] as? String ?? "",
+            source: "kiro-cli"
+        )
+    }
+
+    private func readKiroCLIAuthKV(dbPath: String, key: String) -> String? {
+        readSQLiteText(dbPath: dbPath, sql: "SELECT value FROM auth_kv WHERE key = ? LIMIT 1", key: key)
+    }
+
+    private func readKiroCLIStateString(dbPath: String, key: String) -> String? {
+        guard let value = readSQLiteText(dbPath: dbPath, sql: "SELECT value FROM state WHERE key = ? LIMIT 1", key: key) else { return nil }
+        if let data = value.data(using: .utf8),
+           let decoded = try? JSONSerialization.jsonObject(with: data) as? String {
+            return decoded
+        }
+        return value
+    }
+
+    private func readKiroCLIProfileArn(dbPath: String) -> String? {
+        guard let value = readSQLiteText(dbPath: dbPath, sql: "SELECT value FROM state WHERE key = ? LIMIT 1", key: "api.codewhisperer.profile"),
+              let data = value.data(using: .utf8),
+              let profile = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return profile["arn"] as? String
+    }
+
+    private func readSQLiteText(dbPath: String, sql: String, key: String) -> String? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown error"
+            NSLog("[CLIProxyManager] Failed to open Kiro sqlite at \(dbPath): \(message)")
+            if db != nil { sqlite3_close(db) }
+            return nil
+        }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 1_000)
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            NSLog("[CLIProxyManager] Failed to prepare Kiro sqlite query: \(String(cString: sqlite3_errmsg(db)))")
+            return nil
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        guard key.withCString({ sqlite3_bind_text(stmt, 1, $0, -1, transient) }) == SQLITE_OK else { return nil }
+        guard sqlite3_step(stmt) == SQLITE_ROW, let valuePtr = sqlite3_column_text(stmt, 0) else { return nil }
+        return String(cString: valuePtr)
+    }
+
+    private func readLegacyKiroIDEAuth() -> KiroImportedAuth? {
         let fm = FileManager.default
         let cachePath = NSString(string: "~/.aws/sso/cache").expandingTildeInPath
         let tokenPath = (cachePath as NSString).appendingPathComponent("kiro-auth-token.json")
 
-        // 1. Read Kiro IDE token
         guard let data = fm.contents(atPath: tokenPath),
               let token = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let accessToken = token["accessToken"] as? String,
               let refreshToken = token["refreshToken"] as? String else {
-            return AuthCommandResult(success: false, message: "Kiro IDE token not found at ~/.aws/sso/cache/kiro-auth-token.json. Please login in Kiro IDE first.", deviceCode: nil)
+            return nil
         }
 
-        let expiresAt = token["expiresAt"] as? String ?? ""
-        let region = token["region"] as? String ?? "us-east-1"
-        let authMethod = token["authMethod"] as? String ?? "IdC"
-        let provider = token["provider"] as? String ?? "Enterprise"
-        let clientIdHash = token["clientIdHash"] as? String
-
-        // 2. Load device registration (clientId + clientSecret)
         var clientId = ""
         var clientSecret = ""
-        if let hash = clientIdHash {
+        if let hash = token["clientIdHash"] as? String {
             let regPath = (cachePath as NSString).appendingPathComponent("\(hash).json")
             if let regData = fm.contents(atPath: regPath),
                let reg = try? JSONSerialization.jsonObject(with: regData) as? [String: Any] {
@@ -1495,36 +1616,18 @@ final class CLIProxyManager {
             }
         }
 
-        // 3. Build CLIProxyAPI auth file
-        let authFile: [String: Any] = [
-            "access_token": accessToken,
-            "refresh_token": refreshToken,
-            "expires_at": expiresAt,
-            "region": region,
-            "auth_method": authMethod,
-            "client_id": clientId,
-            "client_secret": clientSecret,
-            "provider": provider,
-            "type": "kiro",
-            "email": "",
-            "profile_arn": "",
-            "last_refresh": ISO8601DateFormatter().string(from: Date())
-        ]
-
-        // 4. Write to auth directory
-        let typeName = provider.lowercased()
-        let port = proxyStatus.port
-        let filename = "kiro-\(typeName)-\(port).json"
-        let destPath = (authDir as NSString).appendingPathComponent(filename)
-
-        do {
-            let jsonData = try JSONSerialization.data(withJSONObject: authFile, options: [.prettyPrinted, .sortedKeys])
-            try jsonData.write(to: URL(fileURLWithPath: destPath), options: .atomic)
-            NSLog("[CLIProxyManager] Kiro IDE token imported to \(filename)")
-            return AuthCommandResult(success: true, message: "Successfully imported Kiro IDE token.", deviceCode: nil)
-        } catch {
-            return AuthCommandResult(success: false, message: "Failed to write auth file: \(error.localizedDescription)", deviceCode: nil)
-        }
+        return KiroImportedAuth(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            expiresAt: token["expiresAt"] as? String ?? "",
+            region: token["region"] as? String ?? "us-east-1",
+            authMethod: token["authMethod"] as? String ?? "IdC",
+            provider: token["provider"] as? String ?? "Enterprise",
+            profileArn: token["profileArn"] as? String ?? token["profile_arn"] as? String ?? "",
+            clientId: clientId,
+            clientSecret: clientSecret,
+            source: "Kiro IDE legacy cache"
+        )
     }
 
     func terminateAuthProcess() {
@@ -1634,6 +1737,7 @@ extension CLIProxyManager {
     func runAuthCommand(_ command: AuthCommand) async -> AuthCommandResult {
         // Native implementation for kiro-import (doesn't require CLIProxyAPI binary support)
         if command == .kiroImport {
+            NSLog("[CLIProxyManager] Running native Kiro import auth command")
             return performNativeKiroImport()
         }
 

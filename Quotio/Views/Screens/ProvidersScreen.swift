@@ -882,7 +882,7 @@ private struct OAuthStatusView: View {
                 VStack(spacing: 12) {
                     ProgressView()
                         .controlSize(.large)
-                    Text("oauth.openingBrowser".localized())
+                    Text(error ?? "oauth.openingBrowser".localized())
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }

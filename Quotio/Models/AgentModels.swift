@@ -229,13 +229,15 @@ nonisolated struct AvailableModel: Identifiable, Codable, Hashable, Sendable {
     }
 
     static let defaultModels: [ModelSlot: AvailableModel] = [
-        .opus: AvailableModel(id: "opus", name: "gemini-claude-opus-4-6-thinking", provider: "openai", isDefault: true),
+        .opus: AvailableModel(id: "opus", name: "kiro-claude-opus-4-7-agentic", provider: "openai", isDefault: true),
         .sonnet: AvailableModel(id: "sonnet", name: "gemini-claude-sonnet-4-5", provider: "openai", isDefault: true),
         .haiku: AvailableModel(id: "haiku", name: "gemini-3-flash-preview", provider: "openai", isDefault: true)
     ]
 
     static let allModels: [AvailableModel] = [
         // Claude models
+        AvailableModel(id: "kiro-claude-opus-4-7-agentic", name: "kiro-claude-opus-4-7-agentic", provider: "anthropic", isDefault: false),
+        AvailableModel(id: "gemini-claude-opus-4-7-thinking", name: "gemini-claude-opus-4-7-thinking", provider: "anthropic", isDefault: false),
         AvailableModel(id: "gemini-claude-opus-4-6-thinking", name: "gemini-claude-opus-4-6-thinking", provider: "anthropic", isDefault: false),
         AvailableModel(id: "gemini-claude-opus-4-5-thinking", name: "gemini-claude-opus-4-5-thinking", provider: "anthropic", isDefault: false),
         AvailableModel(id: "gemini-claude-sonnet-4-5", name: "gemini-claude-sonnet-4-5", provider: "anthropic", isDefault: false),

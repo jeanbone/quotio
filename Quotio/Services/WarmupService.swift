@@ -81,6 +81,10 @@ actor WarmupService {
             return "claude-opus-4-5-thinking"
         case "gemini-claude-opus-4-6-thinking":
             return "claude-opus-4-6-thinking"
+        case "gemini-claude-opus-4-7-thinking":
+            return "claude-opus-4-7-thinking"
+        case "kiro-claude-opus-4-7-agentic":
+            return "claude-opus-4-7"
         case "gemini-2.5-computer-use-preview-10-2025":
             return "rev19-uic3-1p"
         case "gemini-3-pro-image-preview":
