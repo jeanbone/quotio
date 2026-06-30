@@ -1545,7 +1545,9 @@ actor AgentConfigurationService {
             })
             let missingCopilotModels = availableCopilotModelIds.subtracting(existingCopilotIds)
             for modelId in missingCopilotModels {
-                models.append(AvailableModel(id: modelId, name: modelId, provider: "github-copilot", isDefault: false))
+                // CLIProxyAPI expects copilot- prefix on all GitHub Copilot model IDs
+                let prefixedId = modelId.hasPrefix("copilot-") ? modelId : "copilot-" + modelId
+                models.append(AvailableModel(id: prefixedId, name: prefixedId, provider: "github-copilot", isDefault: false))
             }
         }
 
